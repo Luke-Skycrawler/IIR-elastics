@@ -5,7 +5,7 @@ from scipy.sparse.linalg import spsolve, eigsh
 from scipy.linalg import eigh
 import igl
 L, W = 1, 0.2
-mu, rho, lam = 1000., 1., 1.25
+mu, rho, lam = 1e6, 1., 125
 g = 10.
 n_x = 20
 n_yz = 4
@@ -23,9 +23,7 @@ n_unknowns = n_nodes * 3
 # damping
 alpha = 6
 beta = 1e-7
-dt = 1e4
-
-ti.init(ti.x64, default_fp= ti.f32)
+dt = 1e-4
 
 @ti.data_oriented
 class Rod:
@@ -62,11 +60,23 @@ class Rod:
                 b[J * 3 + l] = 0.0
 
     @ti.kernel
-    def update_pos(self, u: ti.types.ndarray()):
+    def update_pos(self, u: ti.types.ndarray(), T: ti.types.ndarray()):
+        r0 = ti.Vector([T[0, 0], T[0, 1], T[0, 2]])
+        r1 = ti.Vector([T[1, 0], T[1, 1], T[1, 2]])
+        r2 = ti.Vector([T[2, 0], T[2, 1], T[2, 2]])
+
+        R = ti.Matrix.rows([r0, r1, r2])
+        b = ti.Vector([T[0, 3], T[1, 3], T[2, 3]])
+
+        mid = ti.Vector([L, W, W]) * 0.5
         for i in self.xcs:
             I = 3 * i
             v = ti.Vector([u[I], u[I+1], u[I+2]])
-            self.xcs[i] += xc(i) + v
+            x = xc(i) + v - mid
+            
+            
+            
+            self.xcs[i] = R @ x + b
 
     @ti.kernel
     def bulk_kernel(self, b: ti.types.ndarray()):
@@ -101,6 +111,14 @@ class Rod:
                             c = eps.trace() * lam * dbjdx + 2 * mu * eps.transpose() @ dbjdx
                             for l in ti.static(range(3)):
                                 self.a[i * 3 + k, j * 3 + l] += c[l] * wq * volume
+
+    def compute_H(self, Q):
+        
+        skew = lambda x: np.array([[0, -x[2], x[1]], [x[2], 0, -x[0]], [-x[1], x[0], 0]])
+        H_row = lambda r: np.hstack([-skew(r), np.eye(3)])
+        Gamma = np.vstack([H_row(r) for r in self.V0])
+        H = Q.T @ Gamma / dt
+        return H
 
     @ti.kernel
     def geometry(self):
