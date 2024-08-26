@@ -1,0 +1,8 @@
+README.md
+setup.py
+fc_viewer.egg-info/PKG-INFO
+fc_viewer.egg-info/SOURCES.txt
+fc_viewer.egg-info/dependency_links.txt
+fc_viewer.egg-info/not-zip-safe
+fc_viewer.egg-info/requires.txt
+fc_viewer.egg-info/top_level.txt

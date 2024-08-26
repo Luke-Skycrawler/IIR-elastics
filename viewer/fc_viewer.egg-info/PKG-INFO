@@ -1,0 +1,9 @@
+Metadata-Version: 2.1
+Name: fc_viewer
+Version: 0.0.1
+Summary: A test project using pybind11 and CMake
+Author: Haoyang Shi
+Author-email: dean0x7d@gmail.com
+Requires-Python: >=3.7
+Provides-Extra: test
+Requires-Dist: pytest>=6.0; extra == "test"
