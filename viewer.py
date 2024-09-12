@@ -10,6 +10,8 @@ ti.init(arch=ti.x64, default_fp=ti.f32)
 rod = Rod()
 mid, V0, F = rod.mid, rod.V0, rod.F
 lam, Q = rod.eigs()
+K = rod.K
+M = rod.M
 lam_vis = lam[6:]
 print(f"lam = {lam[6:,]}, xi = {0.5 * alpha / np.sqrt(lam_vis)}")
 H = rod.compute_H(Q)
@@ -120,16 +122,38 @@ def sv(T1, T0):
     _sv[3:] = v
     return _sv
 
-viewer = fcd.fast_cd_viewer()
+def test_eigenvector():
+    u = np.zeros_like(rod.V0)
+    u[:, 0] = rod.V0[:, 0]
+    print(u.shape)
+    _u = u.reshape(-1)
+    print("K @ u =")
+    Ku = (K @ _u).reshape(-1, 3)
+    print(Ku[:, 0] / u[:, 0])
+    # print(np.max(np.abs(Ku[:, 1: ])))
 
-if init_guizmo:
-    viewer.init_guizmo(True, T0, guizmo_callback, transform)
-viewer.set_pre_draw_callback(pre_draw_callback)
-viewer.set_key_callback(callback_key_pressed)
+    # print("u = ")
+    # print(u[:, 0])
+    quit()
 
 
-viewer.set_mesh(V0, F, 0)
-viewer.launch()
+
+
+if __name__ == "__main__":
+
+    # rod.nullspace_eigs()
+    # quit()
+
+    viewer = fcd.fast_cd_viewer()
+
+    if init_guizmo:
+        viewer.init_guizmo(True, T0, guizmo_callback, transform)
+    viewer.set_pre_draw_callback(pre_draw_callback)
+    viewer.set_key_callback(callback_key_pressed)
+
+
+    viewer.set_mesh(V0, F, 0)
+    viewer.launch()
 
 
 

@@ -2,7 +2,7 @@ import numpy as np
 import taichi as ti
 from scipy.sparse import csr_matrix
 from scipy.sparse.linalg import spsolve, eigsh
-from scipy.linalg import eigh
+from scipy.linalg import eigh, null_space
 import igl
 L, W = 1, 0.2
 mu, rho, lam = 1e6, 1., 125
@@ -46,6 +46,77 @@ class Rod:
         self.V0 = self.V.copy() - self.mid
         self.F = self.indices.to_numpy().reshape(-1, 3).astype(np.int32)
 
+        self.get_K()    
+
+        self.K = self.a.to_numpy()
+        self.M = np.diag(np.ones(n_unknowns))
+
+    def get_K(self):
+        b = np.zeros((n_unknowns), np.float32)
+        self.a.fill(0.0)
+        self.bulk_kernel(b)
+
+    def get_A1(self, N):
+        V0 = self.V0
+        J = np.zeros((N, 18))
+        J[:, 0] = V0[:, 0]
+        J[:, 4] = V0[:, 1]
+        J[:, 8] = V0[:, 2]
+
+        J[:, 9] = V0[:, 1]
+        J[:, 10] = V0[:, 0]
+
+        J[:, 12] = V0[:, 2]
+        J[:, 14] = V0[:, 0]
+        
+        J[:, 16] = V0[:, 2]
+        J[:, 17] = V0[:, 1]
+        
+        A1 = J.reshape(N * 3, 6)
+        return A1
+
+
+    def nullspace_eigs(self):
+        # working imple to get eigen vector Phi of K, s.t. J^T Phi = 0 
+        K, M = self.K, self.M
+
+        N = K.shape[0] // 3
+        A1 = self.get_A1(N)
+        na1 = null_space(A1.T)
+        tilde_K = na1.T @ K @ na1
+        tilde_M = na1.T @ M @ na1
+        lam, _Phi = eigh(tilde_K, tilde_M)
+        Phi = na1 @ _Phi
+        
+        err = Phi.T @ K @ Phi - np.diag(lam)
+        print(f"err = {np.max(np.abs(err))}")
+
+    def KKT_eigs(self):
+        # not working
+        K = self.a.to_numpy()
+        N = K.shape[0] // 3
+        A1 = self.get_A1(N)
+        row1 = np.hstack([K, A1])
+        row2 = np.hstack([A1.T, np.zeros((6, 6))])
+        sys = np.vstack([row1, row2])
+
+        # M_diag = np.zeros(N * 3 + 6)
+        # M_diag[:N * 3] = 1
+        M_diag = np.ones(N * 3 + 6)
+        b = np.diag(M_diag)
+        # b[:N * 3, :N * 3] = np.identity(N * 3)
+        lam, Phi_mu = eigh(sys, b)
+        Lam = np.diag(lam[: -6])
+        Phi = Phi_mu[: -6, : -6]
+        n_inf = lambda x: np.max(np.abs(x))
+        print(f"KKT lam = {lam[: 40]}")
+        print(f"Phi = {Phi}, PhiTPhi = {np.diag(Phi.T @ b[: -6, :-6] @ Phi)[:10]}")
+        # print(f"Phi = {Phi}, PhiTPhi = {np.diag(Phi.T @ b @ Phi)}")
+        print(f"Phi^T J = {n_inf(Phi.T @ A1) }")
+        print(f"Phi^T K Phi - lam = {n_inf((Phi.T @ K @ Phi) - Lam)}")
+        # quit()
+        return lam, Phi, A1
+        
     @ti.kernel
     def boundary_condition(self, b: ti.types.ndarray()):
         for j, k in ti.ndrange(n_yz + 1, n_yz + 1):
@@ -162,17 +233,13 @@ class Rod:
 
     def eigs(self):
         
-        b = np.zeros((n_unknowns), np.float32)
-        self.a.fill(0.0)
-        self.bulk_kernel(b)
-        _a = self.a.to_numpy()
         # a_sparse = csr_matrix(_a)
         # u = spsolve(a_sparse, b)
 
         # lam, Q = eigsh(a_sparse, k = 10)
         # update_pos(Q[:, 0])
         # print(Q.T @ Q)
-        lam, Q = eigh(_a)
+        lam, Q = eigh(self.K)
         return lam, Q
 
 @ti.func
