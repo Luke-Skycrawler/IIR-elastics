@@ -4,6 +4,7 @@ from scipy.sparse import csr_matrix
 from scipy.sparse.linalg import spsolve, eigsh
 from scipy.linalg import eigh, null_space
 import igl
+from tobj import export_tobj
 L, W = 1, 0.2
 mu, rho, lam = 1e6, 1., 125
 g = 10.
@@ -14,6 +15,7 @@ nq = 8
 wq = 1 / nq
 wq_2d = 4
 n_elements, n_nodes = n_yz ** 2 * n_x, (n_yz + 1) ** 2 * (n_x + 1)
+n_tets = n_elements * 6
 n_boundary_elements = n_yz * n_x * 4
 delta = 0.08
 volume = dx ** 3
@@ -37,10 +39,11 @@ class Rod:
         self.faces = ti.Vector.field(4, ti.i32, (6))
         self.boundary_centers = ti.Vector.field(3, ti.f32, (n_boundary_elements))
         self.a = ti.field(ti.f32, (n_unknowns, n_unknowns))
-        self.T = ti.field(int, (n_elements * 5, 4))
-        self.tet = ti.Vector.field(4, ti.i32, (5))
-
+        self.T = ti.field(int, (n_tets, 4))
+        self.tet = ti.Vector.field(4, ti.i32, (6))
+        self.Dm = ti.Matrix.field(3, 3, ti.f32, (n_tets))
         self.geometry()
+        self.compute_Dm()
         self.V = self.xcs.to_numpy()
         self.mid = (np.array([L, W, W]) * 0.5).reshape(1, 3)
         self.V0 = self.V.copy() - self.mid
@@ -54,7 +57,9 @@ class Rod:
     def get_K(self):
         b = np.zeros((n_unknowns), np.float32)
         self.a.fill(0.0)
-        self.bulk_kernel(b)
+        # self.bulk_kernel(b)
+        # self.tet_kernel(b)
+        self.fill_hessian()
 
     def get_A1(self, N):
         V0 = self.V0
@@ -149,6 +154,139 @@ class Rod:
             
             self.xcs[i] = R @ x + b
 
+    def export_tobj(self):
+        export_tobj("bar2.tobj", self.V0, self.T.to_numpy())
+
+    @ti.kernel
+    def tet_kernel(self, b: ti.types. ndarray()):
+        for e in range(n_tets):
+            F = ti.Matrix.identity(ti.f32, 3)
+
+            for _i in range(4):
+                for _j in range(4):
+
+                    i = self.T[e, _i]
+                    j = self.T[e, _j]
+                    H = self.compute_Hij(F, _i, _j) @ self.Dm[e]
+                    
+                    volume = self.compute_volume_tet(e)
+                    for k, l in ti.static(ti.ndrange(3, 3)):
+                        # self.a[i * 3 + k, j * 3 + l] += H[k, l] * volume
+                        self.a[i * 3 + k, j * 3 + l] += H[k, l] * volume
+
+    def compute_dFdx(self, Dm):
+
+        ret = np.zeros((9, 12))
+
+        s = np.sum(Dm, axis = 0)
+
+        ret[0, 0] = -s[0]
+        ret[3, 0] = -s[1]
+        ret[6, 0] = -s[2]
+        
+        ret[1, 1] = -s[0]
+        ret[4, 1] = -s[1]
+        ret[7, 1] = -s[2]
+
+        ret[2, 2] = -s[0]
+        ret[5, 2] = -s[1]
+        ret[8, 2] = -s[2]
+
+        ret[0, 3] = Dm[0, 0]
+        ret[3, 3] = Dm[0, 1]
+        ret[6, 3] = Dm[0, 2]
+        
+        ret[1, 4] = Dm[0, 0]
+        ret[4, 4] = Dm[0, 1]
+        ret[7, 4] = Dm[0, 2]
+        
+
+        ret[2, 5] = Dm[0, 0]
+        ret[5, 5] = Dm[0, 1]
+        ret[8, 5] = Dm[0, 2]
+        
+        ret[0, 6] = Dm[1, 0]
+        ret[3, 6] = Dm[1, 1]
+        ret[6, 6] = Dm[1, 2]
+
+        ret[1, 7] = Dm[1, 0]
+        ret[4, 7] = Dm[1, 1]
+        ret[7, 7] = Dm[1, 2]
+
+        ret[2, 8] = Dm[1, 0]
+        ret[5, 8] = Dm[1, 1]
+        ret[8, 8] = Dm[1, 2]
+
+        ret[0, 9] = Dm[2, 0]
+        ret[3, 9] = Dm[2, 1]
+        ret[6, 9] = Dm[2, 2]
+
+        ret[1, 10] = Dm[2, 0]
+        ret[4, 10] = Dm[2, 1]
+        ret[7, 10] = Dm[2, 2]
+
+        ret[2, 11] = Dm[2, 0]
+        ret[5, 11] = Dm[2, 1]
+        ret[8, 11] = Dm[2, 2]
+        return ret
+        
+    def compute_hessian(self, Dm):
+        dFdx = self.compute_dFdx(Dm)
+        H = dFdx.T @ dFdx
+
+        return H
+    
+    def fill_hessian(self):
+        Dmnp = self.Dm.to_numpy()
+
+        for i in range(n_tets):
+            Dm = Dmnp[i]
+            H = self.compute_hessian(Dm)
+
+            self.fill(i, H)
+
+    @ti.kernel
+    def fill(self, e: ti.i32, H: ti.types.ndarray()):
+        for _i, _j in ti.ndrange(4, 4):
+            i, j = self.T[e, _i], self.T[e, _j]
+            for k, l in ti.static(ti.ndrange(3, 3)):
+                self.a[i * 3 + k, j * 3 + l] += H[_i * 3 + k, _j * 3 + l] * self.compute_volume_tet(e)
+
+    @ti.func
+    def compute_volume_tet(self, e):
+        x0 = self.xcs[self.T[e, 0]]
+        x1 = self.xcs[self.T[e, 1]]
+        x2 = self.xcs[self.T[e, 2]]
+        x3 = self.xcs[self.T[e, 3]]
+
+        ret = (x1 - x0).cross(x2 - x0).dot(x3 - x0) / 6.0
+        return ret
+        # return dx ** 3 / 6
+
+    @ti.func
+    def compute_Hij(self, F, i, j):
+        dDsdx0 = ti.Vector([-1.0, -1.0, -1.0], ti.f32)
+        dDsdx1 = ti.Vector([1.0, 0.0, 0.0], ti.f32)
+        dDsdx2 = ti.Vector([0.0, 1.0, 0.0], ti.f32)
+        dDsdx3 = ti.Vector([0.0, 0.0, 1.0], ti.f32)
+        di = dDsdx0 if i == 0 else (dDsdx1 if i == 1 else (dDsdx2 if i == 2 else dDsdx3))
+        dj = dDsdx0 if j == 0 else (dDsdx1 if j == 1 else (dDsdx2 if j == 2 else dDsdx3))
+        return di.outer_product(dj) * 3.0
+
+    @ti.kernel
+    def compute_Dm(self):
+        for e in range(n_tets):
+            x0 = self.xcs[self.T[e, 0]]
+            x1 = self.xcs[self.T[e, 1]]
+            x2 = self.xcs[self.T[e, 2]]
+            x3 = self.xcs[self.T[e, 3]]
+
+            Dm = ti.Matrix.cols([x1 - x0, x2 - x0, x3 - x0])    
+            inv_Dm = Dm.inverse()
+            self.Dm[e] = inv_Dm
+
+            
+
     @ti.kernel
     def bulk_kernel(self, b: ti.types.ndarray()):
         for e in range(n_elements):
@@ -200,11 +338,16 @@ class Rod:
         self.faces[4] = ti.Vector([1, 5, 7, 3])
         self.faces[5] = ti.Vector([5, 4, 6, 7])
 
-        self.tet[0] = ti.Vector([0, 5, 6, 4])
-        self.tet[1] = ti.Vector([0, 1, 3, 5])
-        self.tet[2] = ti.Vector([3, 5, 2, 6])
-        self.tet[3] = ti.Vector([0, 3, 2, 6])
-        self.tet[4] = ti.Vector([0, 5, 3, 6])
+        # self.tet[0] = ti.Vector([1, 4, 5, 3])
+        # self.tet[1] = ti.Vector([4, 5, 3, 6])
+        # self.tet[2] = ti.Vector([5, 3, 6, 7])
+        self.tet[0] = ti.Vector([4, 1, 5, 3])
+        self.tet[1] = ti.Vector([5, 4, 3, 6])
+        self.tet[2] = ti.Vector([3, 5, 6, 7])
+
+        self.tet[3] = ti.Vector([0, 1, 4, 2])
+        self.tet[4] = ti.Vector([1, 4, 2, 3])
+        self.tet[5] = ti.Vector([4, 2, 3, 6])
 
         for _e in range(n_elements):
             e = _trans(_e)
@@ -222,11 +365,9 @@ class Rod:
                 self.indices[_e * 36 + i * 6 + 4] = trans(self.faces[i][3]) + e
                 self.indices[_e * 36 + i * 6 + 5] = trans(self.faces[i][0]) + e
 
-            for i in range(5):
-                self.T[_e * 5 + i, 0] = trans(self.tet[i][0]) + e
-                self.T[_e * 5 + i, 1] = trans(self.tet[i][1]) + e
-                self.T[_e * 5 + i, 2] = trans(self.tet[i][2]) + e
-                self.T[_e * 5 + i, 3] = trans(self.tet[i][3]) + e
+            for i in range(6):
+                for k in ti.static(range(4)):
+                    self.T[_e * 6 + i, k] = trans(self.tet[i][k]) + e
 
         for i in self.xcs:
             self.xcs[i] = xc(i)
@@ -391,3 +532,7 @@ def boundary_kernel(b: ti.types.ndarray()):
                     b[i] += rhs
 
 
+if __name__ == "__main__":
+    ti.init()
+    rod = Rod()
+    rod.export_tobj()
