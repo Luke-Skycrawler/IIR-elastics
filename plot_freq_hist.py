@@ -2,7 +2,7 @@ import taichi as ti
 import numpy as np
 
 
-from geometry_rod import Rod
+from rod_quad import Rod
 import matplotlib.pyplot as plt
 
 from IIR import alpha, beta
