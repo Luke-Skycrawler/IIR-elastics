@@ -4,7 +4,7 @@ from scipy.sparse import csr_matrix
 from scipy.sparse.linalg import spsolve, eigsh
 from scipy.linalg import eigh, null_space
 import igl
-from tobj import export_tobj
+from tobj import export_tobj, import_tobj
 L, W = 1, 0.2
 mu, rho, lam = 1e6, 1., 125
 g = 10.
@@ -41,6 +41,8 @@ class RodGeometryGenerator:
         self.T = ti.field(int, (n_tets, 4))
         self.tet = ti.Vector.field(4, ti.i32, (6))
         self.Dm = ti.Matrix.field(3, 3, ti.f32, (n_tets))
+        self.n_tets = self.T.shape[0]
+        self.n_nodes = self.xcs.shape[0]
         self.geometry()
     
     @ti.kernel
@@ -90,17 +92,20 @@ class RodGeometryGenerator:
 class TetFEM:
     '''
     virtual interface for tetrahedral computing eigenvectors of tet FEM mesh
+
+    assert self.n_nodes is defined
     '''
     def __init__(self):
         super().__init__()
+        n_unknowns = 3 * self.n_nodes
         self.a = ti.field(ti.f32, (n_unknowns, n_unknowns))
 
         assert(hasattr(self, 'xcs'))
         assert(hasattr(self, 'T'))
-        assert(hasattr(self, 'a'))
+        # assert(hasattr(self, 'a'))
 
-        print(f"init tet FEM")
         self.define_K()
+        print(f"init tet FEM")
 
 
     def eigs(self):        
@@ -114,17 +119,15 @@ class TetFEM:
         '''
         # only depends on self.a, self.T, self.xcs
 
-        b = np.zeros((n_unknowns), np.float32)
         self.a.fill(0.0)
         # self.bulk_kernel(b)
         self.tet_kernel()
-        # self.fill_hessian()
         self.K = self.a.to_numpy()
         self.M = np.diag(np.ones(n_unknowns))
 
     @ti.kernel
     def tet_kernel(self): 
-        for e in range(n_tets):
+        for e in range(self.n_tets):
             
             x = self.xq_tet(e)
             for _i in range(4):
@@ -186,10 +189,9 @@ class TetFEM:
 
         return 0.25 * (x0 + x1 + x2 + x3)
 
-
 @ti.data_oriented
-class Rod(TetFEM, RodGeometryGenerator):
-    def __init__(self): 
+class InterfaceIIRSolver: 
+    def __init__(self):
         super().__init__()
 
         self.define_vis_interface()
@@ -202,8 +204,7 @@ class Rod(TetFEM, RodGeometryGenerator):
         self.mid = (np.array([L, W, W]) * 0.5).reshape(1, 3)
         self.V0 = self.V.copy() - self.mid
         self.F = self.indices.to_numpy().reshape(-1, 3).astype(np.int32)
-
-
+        
     '''
     interface for IIR solver
     '''
@@ -233,6 +234,49 @@ class Rod(TetFEM, RodGeometryGenerator):
             
             
             self.xcs[i] = R @ x + b
+
+@ti.data_oriented
+class TOBJLoader:
+    def __init__(self):
+        '''
+        Before calling super().__init__(), make sure to define self.filename
+        '''
+        V, T = import_tobj(self.filename)
+        self.n_nodes = V.shape[0]
+        self.n_tets = T.shape[0]
+        self.xcs = ti.Vector.field(3, ti.f32, (self.n_nodes))
+        self.T = ti.field(int, (self.n_tets, 4))
+
+        self.T.from_numpy(T)
+        self.xcs.from_numpy(V)
+
+        F = igl.boundary_facets(T)
+        self.indices = ti.field(ti.i32, F.shape)
+        self.indices.from_numpy(F)
+        print(f"{self.filename} loaded, {self.n_nodes} nodes, {self.n_tets} tets")
+        
+
+
+
+@ti.data_oriented
+class TobjFEM(InterfaceIIRSolver, TetFEM, TOBJLoader):
+    def __init__(self, filename = "bunny_5.tobj"):
+        self.filename = filename
+        super().__init__()
+    
+Rod = TobjFEM
+    
+@ti.data_oriented
+class Rod__(InterfaceIIRSolver, TetFEM, RodGeometryGenerator):
+    def __init__(self): 
+        super().__init__()
+
+
+# @ti.data_oriented
+# class Rod(TobjFEM):
+#     def __init__(self):
+#         super().__init__("bar2.tobj")
+    
 
 @ti.data_oriented
 class Rod_:
