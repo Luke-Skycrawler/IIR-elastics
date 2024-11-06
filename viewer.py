@@ -2,7 +2,8 @@
 import fc_viewer as fcd
 import numpy as np
 import taichi as ti 
-from rod_quad import Rod
+# from rod_quad import Rod
+from interface import Rod
 from IIR import step, dt, alpha, step_np
 
 ti.init(arch=ti.x64, default_fp=ti.f32)

@@ -1,6 +1,6 @@
 import polyscope as ps
 # from rod_quad import Rod
-from rod_tet import Rod
+from interface import Rod
 import taichi as ti
 import polyscope.imgui as gui
 class PSViewer:
