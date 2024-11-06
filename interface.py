@@ -2,7 +2,7 @@ import taichi as ti
 import numpy as np
 from params import *
 from geometry import RodGeometryGenerator, TOBJLoader
-from fem import TetFEM
+from fem import TetFEM, QuadFEM
 @ti.data_oriented
 class InterfaceIIRSolver: 
     def __init__(self):
@@ -66,9 +66,14 @@ class TobjFEM(InterfaceIIRSolver, TetFEM, TOBJLoader):
     
     
 @ti.data_oriented
-class Rod_(InterfaceIIRSolver, TetFEM, RodGeometryGenerator):
+class RodTet(InterfaceIIRSolver, TetFEM, RodGeometryGenerator):
     def __init__(self): 
         super().__init__()
 
+@ti.data_oriented
+class RodQuad(InterfaceIIRSolver, QuadFEM, RodGeometryGenerator):
+    def __init__(self): 
+        super().__init__()
+        
 # Rod = TobjFEM
-Rod = Rod_
+Rod = RodQuad
