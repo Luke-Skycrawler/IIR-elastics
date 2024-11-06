@@ -28,7 +28,182 @@ beta = 1e-7
 dt = 1e-4
 
 @ti.data_oriented
-class Rod:
+class RodGeometryGenerator:
+    def __init__(self):
+        self.indices = ti.field(ti.i32, (n_elements * 12 * 3))
+
+
+        self.nodes = ti.field(ti.i32, (n_elements, 8))
+        self.centers = ti.Vector.field(3, ti.f32, (n_elements))
+        self.xcs = ti.Vector.field(3, ti.f32, (n_nodes))
+        self.faces = ti.Vector.field(4, ti.i32, (6))
+        self.boundary_centers = ti.Vector.field(3, ti.f32, (n_boundary_elements))
+        self.T = ti.field(int, (n_tets, 4))
+        self.tet = ti.Vector.field(4, ti.i32, (6))
+        self.Dm = ti.Matrix.field(3, 3, ti.f32, (n_tets))
+        self.geometry()
+    
+    @ti.kernel
+    def geometry(self):
+        self.faces[0] = ti.Vector([0, 1, 3, 2])
+        self.faces[1] = ti.Vector([4, 5, 1, 0])
+        self.faces[2] = ti.Vector([2, 3, 7, 6])
+        self.faces[3] = ti.Vector([4, 0, 2, 6])
+        self.faces[4] = ti.Vector([1, 5, 7, 3])
+        self.faces[5] = ti.Vector([5, 4, 6, 7])
+
+        # self.tet[0] = ti.Vector([1, 4, 5, 3])
+        # self.tet[1] = ti.Vector([4, 5, 3, 6])
+        # self.tet[2] = ti.Vector([5, 3, 6, 7])
+        self.tet[0] = ti.Vector([4, 1, 5, 3])
+        self.tet[1] = ti.Vector([5, 4, 3, 6])
+        self.tet[2] = ti.Vector([3, 5, 6, 7])
+
+        self.tet[3] = ti.Vector([0, 1, 4, 2])
+        self.tet[4] = ti.Vector([1, 4, 2, 3])
+        self.tet[5] = ti.Vector([4, 2, 3, 6])
+
+        for _e in range(n_elements):
+            e = _trans(_e)
+            self.centers[_e] = xc(e) + 0.5 * dx
+            for i, j, k in ti.static(ti.ndrange(2, 2, 2)):
+                I = e + i * (n_yz + 1) ** 2 + j * (n_yz + 1) + k
+                J = i * 4 + j * 2 + k
+                self.nodes[_e, J] = I
+
+            for i in range(6):
+                self.indices[_e * 36 + i * 6 + 0] = trans(self.faces[i][0]) + e
+                self.indices[_e * 36 + i * 6 + 1] = trans(self.faces[i][1]) + e
+                self.indices[_e * 36 + i * 6 + 2] = trans(self.faces[i][2]) + e
+                self.indices[_e * 36 + i * 6 + 3] = trans(self.faces[i][2]) + e
+                self.indices[_e * 36 + i * 6 + 4] = trans(self.faces[i][3]) + e
+                self.indices[_e * 36 + i * 6 + 5] = trans(self.faces[i][0]) + e
+
+            for i in range(6):
+                for k in ti.static(range(4)):
+                    self.T[_e * 6 + i, k] = trans(self.tet[i][k]) + e
+
+        for i in self.xcs:
+            self.xcs[i] = xc(i)
+
+        
+@ti.data_oriented
+class TetFEM:
+    '''
+    virtual interface for tetrahedral computing eigenvectors of tet FEM mesh
+    '''
+    def __init__(self):
+        super().__init__()
+        self.a = ti.field(ti.f32, (n_unknowns, n_unknowns))
+
+        assert(hasattr(self, 'xcs'))
+        assert(hasattr(self, 'T'))
+        assert(hasattr(self, 'a'))
+
+        print(f"init tet FEM")
+        self.define_K()
+        self.define_vis_interface()
+        
+    def define_vis_interface(self):
+        '''
+        define attributes for polyscope visualization
+        '''
+        self.V = self.xcs.to_numpy()
+        self.mid = (np.array([L, W, W]) * 0.5).reshape(1, 3)
+        self.V0 = self.V.copy() - self.mid
+        self.F = self.indices.to_numpy().reshape(-1, 3).astype(np.int32)
+
+
+    def eigs(self):        
+        lam, Q = eigh(self.K)
+        return lam, Q
+
+
+    def define_K(self):
+        '''
+        adds np.ndarray K to self
+        '''
+        # only depends on self.a, self.T, self.xcs
+
+        b = np.zeros((n_unknowns), np.float32)
+        self.a.fill(0.0)
+        # self.bulk_kernel(b)
+        self.tet_kernel()
+        # self.fill_hessian()
+        self.K = self.a.to_numpy()
+
+    @ti.kernel
+    def tet_kernel(self): 
+        for e in range(n_tets):
+            
+            x = self.xq_tet(e)
+            for _i in range(4):
+                i = self.T[e, _i]
+                
+                bi, dbidx = self.bf_tet(e, _i, x)
+
+                for _j in range(4):
+                    j = self.T[e, _j]
+                    bj, dbjdx = self.bf_tet(e, _j, x)
+                    for k in ti.static(range(3)):
+                        grad_v = ti.Vector.unit(3, k, ti.f32).outer_product(dbidx)
+                        eps = (grad_v + grad_v.transpose()) / 2
+                        c = eps.trace() * lam * dbjdx + 2 * mu * eps.transpose() @ dbjdx
+                        for l in ti.static(range(3)):
+                            self.a[i * 3 + k, j * 3 + l] += c[l] * volume
+
+    @ti.func
+    def bf_tet(self, e, _i, x):
+        bi = 0.25
+        n = self.normal(e, _i)
+        x0 = self.xcs[self.T[e, _i]]
+        k = 0.75 / ((x0 - x).dot(n))
+        dbidx = n * k
+        
+        return bi, dbidx
+
+    @ti.func
+    def normal(self, e, _i):
+        v0 = self.T[e, 0]
+        v1 = self.T[e, 1]
+        v2 = self.T[e, 2]
+
+        v = self.T[e, _i]
+        x = self.xcs[v]
+        if _i == 0:
+            v0 = self.T[e, 3]
+        if _i == 1:
+            v1 = self.T[e, 3]
+        if _i == 2:
+            v2 = self.T[e, 3]
+
+        x0 = self.xcs[v0]
+        x1 = self.xcs[v1]
+        x2 = self.xcs[v2]
+
+        n = (x1 - x0).cross(x2 - x0).normalized()
+        if n.dot(x - x0) < 0:
+            n = -n
+        return n
+    
+
+    @ti.func
+    def xq_tet(self, e):
+        x0 = self.xcs[self.T[e, 0]]
+        x1 = self.xcs[self.T[e, 1]]
+        x2 = self.xcs[self.T[e, 2]]
+        x3 = self.xcs[self.T[e, 3]]
+
+        return 0.25 * (x0 + x1 + x2 + x3)
+
+
+@ti.data_oriented
+class Rod(TetFEM, RodGeometryGenerator):
+    def __init__(self): 
+        super().__init__()
+
+@ti.data_oriented
+class Rod_:
     def __init__(self):
         self.indices = ti.field(ti.i32, (n_elements * 12 * 3))
 
@@ -43,7 +218,7 @@ class Rod:
         self.tet = ti.Vector.field(4, ti.i32, (6))
         self.Dm = ti.Matrix.field(3, 3, ti.f32, (n_tets))
         self.geometry()
-        self.compute_Dm()
+
         self.V = self.xcs.to_numpy()
         self.mid = (np.array([L, W, W]) * 0.5).reshape(1, 3)
         self.V0 = self.V.copy() - self.mid
@@ -220,6 +395,7 @@ class Rod:
         return H
     
     def fill_hessian(self):
+        self.compute_Dm()
         Dmnp = self.Dm.to_numpy()
 
         for i in range(n_tets):
