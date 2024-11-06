@@ -86,7 +86,6 @@ class RodGeometryGenerator:
         for i in self.xcs:
             self.xcs[i] = xc(i)
 
-        
 @ti.data_oriented
 class TetFEM:
     '''
@@ -102,16 +101,6 @@ class TetFEM:
 
         print(f"init tet FEM")
         self.define_K()
-        self.define_vis_interface()
-        
-    def define_vis_interface(self):
-        '''
-        define attributes for polyscope visualization
-        '''
-        self.V = self.xcs.to_numpy()
-        self.mid = (np.array([L, W, W]) * 0.5).reshape(1, 3)
-        self.V0 = self.V.copy() - self.mid
-        self.F = self.indices.to_numpy().reshape(-1, 3).astype(np.int32)
 
 
     def eigs(self):        
@@ -131,6 +120,7 @@ class TetFEM:
         self.tet_kernel()
         # self.fill_hessian()
         self.K = self.a.to_numpy()
+        self.M = np.diag(np.ones(n_unknowns))
 
     @ti.kernel
     def tet_kernel(self): 
@@ -201,6 +191,48 @@ class TetFEM:
 class Rod(TetFEM, RodGeometryGenerator):
     def __init__(self): 
         super().__init__()
+
+        self.define_vis_interface()
+
+    def define_vis_interface(self):
+        '''
+        define attributes for polyscope visualization
+        '''
+        self.V = self.xcs.to_numpy()
+        self.mid = (np.array([L, W, W]) * 0.5).reshape(1, 3)
+        self.V0 = self.V.copy() - self.mid
+        self.F = self.indices.to_numpy().reshape(-1, 3).astype(np.int32)
+
+
+    '''
+    interface for IIR solver
+    '''
+    def compute_H(self, Q):
+        
+        skew = lambda x: np.array([[0, -x[2], x[1]], [x[2], 0, -x[0]], [-x[1], x[0], 0]])
+        H_row = lambda r: np.hstack([-skew(r), np.eye(3)])
+        Gamma = np.vstack([H_row(r) for r in self.V0])
+        H = Q.T @ Gamma / dt
+        return H
+
+    @ti.kernel
+    def update_pos(self, u: ti.types.ndarray(), T: ti.types.ndarray()):
+        r0 = ti.Vector([T[0, 0], T[0, 1], T[0, 2]])
+        r1 = ti.Vector([T[1, 0], T[1, 1], T[1, 2]])
+        r2 = ti.Vector([T[2, 0], T[2, 1], T[2, 2]])
+
+        R = ti.Matrix.rows([r0, r1, r2])
+        b = ti.Vector([T[0, 3], T[1, 3], T[2, 3]])
+
+        mid = ti.Vector([L, W, W]) * 0.5
+        for i in self.xcs:
+            I = 3 * i
+            v = ti.Vector([u[I], u[I+1], u[I+2]])
+            x = xc(i) + v - mid
+            
+            
+            
+            self.xcs[i] = R @ x + b
 
 @ti.data_oriented
 class Rod_:
